@@ -200,10 +200,25 @@ export default {
           if (!bValue) bValue = Number.MAX_VALUE
         }
 
+        let result
         if (this.sortDesc) {
-          return String(bValue).localeCompare(String(aValue), undefined, { numeric: true, sensitivity: 'base' })
+          result = String(bValue).localeCompare(String(aValue), undefined, { numeric: true, sensitivity: 'base' })
+        } else {
+          result = String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: 'base' })
         }
-        return String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: 'base' })
+
+        // For numeric sorts (e.g. season/episode number) episodes with no value all compare equal,
+        // which would make toggling the sort direction a no-op. Fall back to pub date like the web client.
+        if (result === 0 && this.sortKey !== 'publishedAt') {
+          const aDate = a.publishedAt || Number.MAX_VALUE
+          const bDate = b.publishedAt || Number.MAX_VALUE
+          if (this.sortDesc) {
+            result = String(bDate).localeCompare(String(aDate), undefined, { numeric: true, sensitivity: 'base' })
+          } else {
+            result = String(aDate).localeCompare(String(bDate), undefined, { numeric: true, sensitivity: 'base' })
+          }
+        }
+        return result
       })
     },
     // Map of local episodes where server episode id is key
