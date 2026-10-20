@@ -14,6 +14,10 @@ class DbManager {
   companion object {
     private var isDbInitialized = false
 
+    // Log store bounds (issue #2038)
+    private const val MAX_LOG_MESSAGE_LENGTH = 4000
+    private const val MAX_LOG_ENTRIES = 1000
+
     fun initialize(ctx: Context) {
       if (isDbInitialized) return
       Paper.init(ctx)
@@ -372,12 +376,32 @@ class DbManager {
   }
 
   fun saveLog(log: AbsLog) {
-    Paper.book("log").write(log.id, log)
+    // Truncate very long messages to keep individual PaperDB table files small
+    val message = if (log.message.length > MAX_LOG_MESSAGE_LENGTH) {
+      log.message.substring(0, MAX_LOG_MESSAGE_LENGTH) + "... [truncated]"
+    } else log.message
+    try {
+      Paper.book("log").write(log.id, log.copy(message = message))
+    } catch (e: Exception) {
+      // Never allow log persistence failures to crash the app
+      Log.e("DbManager", "saveLog: Failed to persist log entry", e)
+    }
   }
   fun getAllLogs(): List<AbsLog> {
     val logs: MutableList<AbsLog> = mutableListOf()
     Paper.book("log").allKeys.forEach { logId ->
-      Paper.book("log").read<AbsLog>(logId)?.let { logs.add(it) }
+      // A corrupt/truncated PaperDB table file must not crash the whole app (issue #2038).
+      // Skip and delete unreadable entries so the Logs page always renders.
+      try {
+        Paper.book("log").read<AbsLog>(logId)?.let { logs.add(it) }
+      } catch (e: Exception) {
+        Log.e("DbManager", "getAllLogs: Failed to read log entry $logId - removing corrupt entry", e)
+        try {
+          Paper.book("log").delete(logId)
+        } catch (deleteEx: Exception) {
+          Log.e("DbManager", "getAllLogs: Failed to remove corrupt log entry $logId", deleteEx)
+        }
+      }
     }
     return logs.sortedBy { it.timestamp }
   }
@@ -395,10 +419,18 @@ class DbManager {
         logsRemoved++
       }
     }
+    // Cap the total number of log entries so the store can never grow without bound
+    val excess = allLogs.size - MAX_LOG_ENTRIES
+    if (excess > 0) {
+      allLogs.take(excess).forEach {
+        Paper.book("log").delete(it.id)
+        logsRemoved++
+      }
+    }
     if (logsRemoved > 0) {
       AbsLogger.info(
               "DbManager",
-              "cleanLogs: Removed $logsRemoved logs older than $numberOfHoursToKeep hours"
+              "cleanLogs: Removed $logsRemoved logs (48h retention + $MAX_LOG_ENTRIES entry cap)"
       )
     }
   }
